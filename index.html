@@ -1,0 +1,952 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101827">
+<title>My AI Car Assistant</title>
+
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:#101827;color:#f8fafc;font:16px/1.5 system-ui,Arial}
+main{max-width:760px;margin:auto}
+h1{font-size:26px}
+.muted,.small{color:#cbd5e1}
+.small{font-size:13px}
+.panel{background:#1e293b;padding:15px;border-radius:15px;margin:14px 0;border:1px solid #334155}
+button,input{width:100%;padding:13px;margin:5px 0;border:0;border-radius:10px;font:inherit}
+button{font-weight:700;cursor:pointer;background:#34d399;color:#052e25}
+input{background:#f8fafc;color:#111827}
+#listen{background:#60a5fa}
+#stopVoice{background:#fbbf24;color:#111827}
+#stopCar{background:#ef4444;color:white}
+.secondary{background:#475569;color:white}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#chat{max-height:390px;overflow:auto;display:flex;flex-direction:column;gap:8px;overflow-wrap:anywhere}
+.message{padding:11px;border-radius:11px;background:#334155;white-space:pre-wrap;overflow-wrap:anywhere}
+.user{background:#155e56;align-self:flex-end;max-width:95%}
+.assistant{align-self:flex-start;max-width:100%}
+.who{display:block;font-size:12px;color:#cbd5e1;font-weight:700}
+.tag{display:inline-block;border:1px solid #475569;border-radius:20px;padding:3px 9px;color:#cbd5e1;font-size:12px;margin:2px}
+.status{color:#93c5fd}
+.hide{display:none}
+.warning{color:#fde68a}
+.car-controls{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:360px;margin:12px auto}
+.car-controls button{min-height:55px;margin:0}
+.car-controls .empty{visibility:hidden}
+</style>
+</head>
+
+<body>
+<main>
+<h1>🤖 My AI Car Assistant</h1>
+
+<p class="muted">Conversation • Memory • Voice • Mathematics • Online knowledge • Car simulation</p>
+
+<span class="tag">Robot: simulation only</span>
+<span class="tag" id="memoryStatus">Memory: loading</span>
+<span class="tag" id="voiceStatus">Voice: checking</span>
+
+<section class="panel">
+<p id="status" class="status">Ready when you are.</p>
+
+<div class="row">
+<button id="listen" type="button">🎙️ Speak</button>
+<button id="stopVoice" type="button">🔇 Stop Talking</button>
+<button id="stopCar" type="button">🛑 Stop Car</button>
+<button id="showMemory" class="secondary" type="button">🧠 Show Memory</button>
+</div>
+</section>
+
+<section class="panel">
+<div id="chat" aria-live="polite"></div>
+
+<form id="form">
+<input id="message" placeholder="Ask a question or give a command…" autocomplete="off">
+<button id="send" type="submit">Send Message</button>
+</form>
+
+<div class="row">
+<button id="clearChat" class="secondary" type="button">Clear Chat</button>
+<button id="forget" class="secondary" type="button">Forget Memory</button>
+</div>
+
+<div id="memoryPanel" class="hide">
+<strong>Saved memory</strong>
+<p id="memoryText"></p>
+<p class="small">Stored in this browser on this device. Browser settings may clear it.</p>
+</div>
+</section>
+
+<section class="panel">
+<h3>Car simulation</h3>
+
+<p id="car" aria-live="polite">Car is stopped.</p>
+
+<!-- Functional controls: all call the same runCar function -->
+<div class="car-controls">
+<div class="empty"></div>
+<button type="button" data-car="FORWARD" aria-label="Move forward">⬆️ Forward</button>
+<div class="empty"></div>
+
+<button type="button" data-car="LEFT" aria-label="Turn left">⬅️ Left</button>
+<button type="button" data-car="STOP" aria-label="Stop car">🛑 Stop</button>
+<button type="button" data-car="RIGHT" aria-label="Turn right">➡️ Right</button>
+
+<div class="empty"></div>
+<button type="button" data-car="BACKWARD" aria-label="Move backward">⬇️ Backward</button>
+<div class="empty"></div>
+</div>
+
+<p class="small">Simulation only. No ESP32 or physical motors are connected.</p>
+</section>
+
+<section class="panel">
+<strong>Important limits</strong>
+<p class="small">
+This prototype uses rules and Wikipedia search, not a full advanced AI model.
+It may misunderstand complicated questions. It does not have access to current
+prices or private accounts unless connected to an appropriate service.
+Never enter passwords here.
+</p>
+</section>
+</main>
+
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+const KEY = "my_ai_assistant_v3";
+
+let data = {
+  messages: [],
+  memories: [],
+  name: "",
+  topic: "",
+  lastQuestion: "",
+  lastAnswer: ""
+};
+
+let speechOn = true;
+let recognition = null;
+let listening = false;
+let busy = false;
+
+/* ---------------- MEMORY ---------------- */
+
+function load() {
+  try {
+    data = {
+      ...data,
+      ...JSON.parse(localStorage.getItem(KEY) || "{}")
+    };
+
+    if (!Array.isArray(data.messages)) data.messages = [];
+    if (!Array.isArray(data.memories)) data.memories = [];
+
+    $("memoryStatus").textContent = "Memory: on";
+  } catch {
+    $("memoryStatus").textContent = "Memory: unavailable";
+  }
+}
+
+function save() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(data));
+    $("memoryStatus").textContent = "Memory: saved";
+  } catch {
+    $("memoryStatus").textContent = "Memory: unavailable";
+  }
+}
+
+function add(who, text, store = true) {
+  const box = document.createElement("div");
+  box.className = "message " + (who === "You" ? "user" : "assistant");
+
+  const label = document.createElement("span");
+  label.className = "who";
+  label.textContent = who;
+
+  const message = document.createElement("span");
+  message.textContent = text;
+
+  box.append(label, message);
+  $("chat").append(box);
+  $("chat").scrollTop = $("chat").scrollHeight;
+
+  if (store) {
+    data.messages.push({ who, text });
+    data.messages = data.messages.slice(-60);
+    save();
+  }
+}
+
+function say(text, topic = null, question = null) {
+  add("Assistant", text);
+
+  data.lastAnswer = text;
+
+  if (topic) data.topic = topic;
+  if (question) data.lastQuestion = question;
+
+  save();
+
+  if (!speechOn || !window.speechSynthesis) return;
+
+  speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "en-US";
+
+  utterance.onend = () => {
+    $("status").textContent = "Ready when you are.";
+  };
+
+  $("status").textContent = "Speaking…";
+  speechSynthesis.speak(utterance);
+}
+
+/* ---------------- MESSAGE NORMALIZATION ---------------- */
+
+function norm(s) {
+  return s
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/[’']/g, "")
+    .replace(/[?!,.;:]/g, " ")
+    .replace(/\bforw\s*ard|forwrd|forword|forwad|foward\b/g, "forward")
+    .replace(/\bback\s*ward\b/g, "backward")
+    .replace(/\brigtht?\b/g, "right")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/* ---------------- MEMORY COMMANDS ---------------- */
+
+function remember(text) {
+  const value = text.trim().replace(/[.!?]+$/, "");
+
+  if (!value) return;
+
+  const exists = data.memories.some(
+    item => item.toLowerCase() === value.toLowerCase()
+  );
+
+  if (!exists) data.memories.push(value);
+
+  data.memories = data.memories.slice(-30);
+  save();
+}
+
+function memoryCommand(raw) {
+  const original = raw.trim();
+  let match;
+
+  match = original.match(/^remember(?: that)?\s+(.+)$/i);
+
+  if (match) {
+    remember(match[1]);
+    return "Okay bro, I'll remember this: " + match[1];
+  }
+
+  match = original.match(/^my name is\s+(.{1,50})$/i);
+
+  if (match) {
+    data.name = match[1].trim();
+    remember("The user's name is " + data.name);
+
+    return "Nice to meet you, " + data.name +
+      ". I'll remember your name on this device.";
+  }
+
+  match = original.match(/^call me\s+(.{1,50})$/i);
+
+  if (match) {
+    data.name = match[1].trim();
+    remember("The user's name is " + data.name);
+
+    return "Okay, bro. I'll call you " + data.name + ".";
+  }
+
+  match = original.match(
+    /^i (like|love|prefer|want|live in|am learning|am building|hope to)\s+(.+)$/i
+  );
+
+  if (match) {
+    const detail = "User says: I " + match[1] + " " + match[2];
+    remember(detail);
+    return "I'll remember that: I " + match[1] + " " + match[2] + ".";
+  }
+
+  return null;
+}
+
+function showMemory() {
+  $("memoryText").textContent =
+    "Name: " + (data.name || "not saved") +
+    "\n\nSaved details:\n" +
+    (data.memories.map((x, i) => (i + 1) + ". " + x).join("\n") ||
+      "No saved details.") +
+    "\n\nRecent chat:\n" +
+    data.messages.slice(-12).map(x => x.who + ": " + x.text).join("\n");
+
+  $("memoryPanel").classList.remove("hide");
+}
+
+function clearMemory() {
+  if (!confirm("Delete saved memories and conversation history in this browser?")) {
+    return;
+  }
+
+  data = {
+    messages: [],
+    memories: [],
+    name: "",
+    topic: "",
+    lastQuestion: "",
+    lastAnswer: ""
+  };
+
+  save();
+  $("chat").replaceChildren();
+
+  add("Assistant", "Memory cleared. We can start again.");
+  $("memoryPanel").classList.add("hide");
+}
+
+/* ---------------- CAR COMMAND RECOGNITION ---------------- */
+
+/*
+  These words and phrases can express the same intention.
+  This is improved rule-based recognition, not full AI reasoning.
+*/
+
+function carCmd(raw) {
+  const t = norm(raw);
+
+  /* Ignore commands that clearly refer to speech, not the car. */
+  if (/\b(stop talking|stop speaking|stop voice|be quiet)\b/.test(t)) {
+    return null;
+  }
+
+  /* Stop commands */
+  if (
+    /\b(stop|halt|stay still|stand still|dont move|do not move|freeze)\b/.test(t) ||
+    /\b(stop the car|stop moving|bring it to a stop|come to a stop)\b/.test(t)
+  ) {
+    return "STOP";
+  }
+
+  /* Detect direction */
+  const forward =
+    /\b(forward|ahead|straight|front|forwards)\b/.test(t);
+
+  const backward =
+    /\b(back|backward|backwards|reverse|reversing)\b/.test(t);
+
+  const left =
+    /\b(left|leftward)\b/.test(t);
+
+  const right =
+    /\b(right|rightward)\b/.test(t);
+
+  /* Avoid guessing if directions conflict. */
+  const directions = [forward, backward, left, right].filter(Boolean).length;
+
+  if (directions > 1) return "UNCLEAR";
+  if (directions === 0) return null;
+
+  /*
+    Direct direction phrases such as "left" and "back"
+    are allowed. Longer sentences need a movement-related
+    phrase to avoid mistaking every mention of "left" for
+    a car command.
+  */
+
+  const direct = /^(forward|forwards|ahead|straight|back|backward|backwards|reverse|left|right)$/.test(t);
+
+  const movementIntent =
+    /\b(move|go|drive|turn|steer|head|take|bring|put|pull|reverse|back up|go back|go forward|keep going|move over|veer|make)\b/.test(t);
+
+  if (!direct && !movementIntent) return null;
+
+  if (forward) return "FORWARD";
+  if (backward) return "BACKWARD";
+  if (left) return "LEFT";
+  if (right) return "RIGHT";
+
+  return null;
+}
+
+/* One shared function for voice and buttons. */
+function runCar(command) {
+  const descriptions = {
+    FORWARD: "Car is moving forward in simulation.",
+    BACKWARD: "Car is moving backward in simulation.",
+    LEFT: "Car is turning left in simulation.",
+    RIGHT: "Car is turning right in simulation.",
+    STOP: "Car is stopped."
+  };
+
+  if (!descriptions[command]) return;
+
+  $("car").textContent = descriptions[command];
+
+  if (command === "STOP") {
+    say("Stop command recognized. The simulated car is stopped.");
+    return;
+  }
+
+  say(
+    descriptions[command] +
+    " No physical motors are connected."
+  );
+}
+
+/* Connect every direction button to the shared car function. */
+document.querySelectorAll("[data-car]").forEach(button => {
+  button.addEventListener("click", () => {
+    runCar(button.dataset.car);
+  });
+});
+
+/* ---------------- MATHEMATICS ---------------- */
+
+function mathTokens(raw) {
+  let s = raw.toLowerCase().trim()
+    .replace(/^(what is|calculate|work out|solve|compute)\s+/, "")
+    .replace(/\?+$/, "");
+
+  s = s
+    .replace(/multiplied by|multiply by|times|multiplied|multiply|×/g, " * ")
+    .replace(/divided by|divide by|divided|divide|÷/g, " / ")
+    .replace(/plus|add/g, " + ")
+    .replace(/minus|subtract/g, " - ")
+    .replace(/raised to the power of|raised to|to the power of|power of/g, " ^ ")
+    .replace(/square root of|square root/g, " sqrt ")
+    .replace(/(\d+(?:\.\d+)?)\s*percent of\s*(\d+(?:\.\d+)?)/g, "($1 / 100 * $2)")
+    .replace(/(\d+(?:\.\d+)?)\s*%\s*of\s*(\d+(?:\.\d+)?)/g, "($1 / 100 * $2)")
+    .replace(/(\d+(?:\.\d+)?)\s*%/g, "($1 / 100)")
+    .replace(/√\s*/g, " sqrt ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const tokens = [];
+  let i = 0;
+
+  while (i < s.length) {
+    if (/\s/.test(s[i])) {
+      i++;
+      continue;
+    }
+
+    const rest = s.slice(i);
+    const number = rest.match(/^(?:\d+(?:\.\d*)?|\.\d+)/);
+
+    if (number) {
+      tokens.push(number[0]);
+      i += number[0].length;
+      continue;
+    }
+
+    const sqrt = rest.match(/^sqrt\b/);
+
+    if (sqrt) {
+      tokens.push("sqrt");
+      i += 4;
+      continue;
+    }
+
+    if ("()+-*/^".includes(s[i])) {
+      tokens.push(s[i++]);
+      continue;
+    }
+
+    return null;
+  }
+
+  return tokens;
+}
+
+function calc(raw) {
+  if (!/\d/.test(raw)) return null;
+
+  const tokens = mathTokens(raw);
+  if (!tokens || !tokens.length) return null;
+
+  let i = 0;
+
+  function expression() {
+    return add();
+  }
+
+  function add() {
+    let value = multiply();
+
+    while (tokens[i] === "+" || tokens[i] === "-") {
+      const operator = tokens[i++];
+      const right = multiply();
+
+      value = operator === "+" ? value + right : value - right;
+    }
+
+    return value;
+  }
+
+  function multiply() {
+    let value = power();
+
+    while (tokens[i] === "*" || tokens[i] === "/") {
+      const operator = tokens[i++];
+      const right = power();
+
+      if (operator === "/" && right === 0) {
+        throw Error("Cannot divide by zero.");
+      }
+
+      value = operator === "*" ? value * right : value / right;
+    }
+
+    return value;
+  }
+
+  function power() {
+    let value = unary();
+
+    if (tokens[i] === "^") {
+      i++;
+      value = Math.pow(value, power());
+    }
+
+    return value;
+  }
+
+  function unary() {
+    if (tokens[i] === "+") {
+      i++;
+      return unary();
+    }
+
+    if (tokens[i] === "-") {
+      i++;
+      return -unary();
+    }
+
+    if (tokens[i] === "sqrt") {
+      i++;
+      const value = unary();
+
+      if (value < 0) {
+        throw Error("Negative square roots are not supported.");
+      }
+
+      return Math.sqrt(value);
+    }
+
+    if (tokens[i] === "(") {
+      i++;
+      const value = expression();
+
+      if (tokens[i++] !== ")") {
+        throw Error("Missing closing bracket.");
+      }
+
+      return value;
+    }
+
+    const number = tokens[i++];
+
+    if (number === undefined ||
+        !/^(\d+(\.\d*)?|\.\d+)$/.test(number)) {
+      throw Error("Number expected.");
+    }
+
+    return Number(number);
+  }
+
+  try {
+    const value = expression();
+
+    if (i !== tokens.length ||
+        !Number.isFinite(value) ||
+        Math.abs(value) > 1e15) {
+      return null;
+    }
+
+    return Number.isInteger(value)
+      ? String(value)
+      : String(Number(value.toPrecision(10)));
+  } catch (error) {
+    return error.message;
+  }
+}
+
+/* ---------------- FOLLOW-UP QUESTIONS ---------------- */
+
+function incomplete(text) {
+  return /^(how much|how many|how long|what about|and then|why|where|when|which one|tell me more|more details)$/.test(text);
+}
+
+function expandFollowup(raw) {
+  const t = norm(raw);
+  const topic = data.topic;
+
+  if (!topic) return null;
+
+  if (/\b(how much|how many|how old|his net worth|her net worth|how expensive|what about him|what about her)\b/.test(t)) {
+    if (/\bhow old\b/.test(t)) {
+      return "How old is " + topic + "?";
+    }
+
+    if (/\b(how much|net worth|expensive)\b/.test(t)) {
+      return "What is " + topic + "'s net worth or price?";
+    }
+
+    return "Tell me more about " + topic + ".";
+  }
+
+  return null;
+}
+
+/* ---------------- WIKIPEDIA SEARCH ---------------- */
+
+async function wiki(query) {
+  const url =
+    "https://en.wikipedia.org/w/api.php?action=query" +
+    "&generator=search&gsrsearch=" + encodeURIComponent(query) +
+    "&gsrnamespace=0&gsrlimit=1&prop=extracts" +
+    "&exintro=1&explaintext=1&exchars=1100" +
+    "&format=json&origin=*";
+
+  const response = await fetch(url);
+
+  if (!response.ok) throw Error("Search failed");
+
+  const result = await response.json();
+  const pages = result.query ? Object.values(result.query.pages) : [];
+
+  return pages.length
+    ? {
+        title: pages[0].title,
+        text: pages[0].extract || ""
+      }
+    : null;
+}
+
+/* ---------------- MAIN ASSISTANT ---------------- */
+
+async function handle(raw) {
+  raw = raw.trim();
+
+  if (!raw) return;
+
+  if (busy) {
+    add("Assistant", "I'm still looking up the last question. Give me a moment.");
+    return;
+  }
+
+  add("You", raw);
+
+  $("message").value = "";
+
+  const t = norm(raw);
+
+  /* Voice controls */
+  if (/\b(stop talking|stop speaking|stop voice|be quiet)\b/.test(t)) {
+    speechOn = false;
+
+    if (window.speechSynthesis) speechSynthesis.cancel();
+
+    $("status").textContent = "Voice replies off.";
+    add("Assistant", "Okay bro, I'll stay quiet. Press Speak to use voice input again.");
+    return;
+  }
+
+  if (/\b(start talking|talk again|speak again)\b/.test(t)) {
+    speechOn = true;
+    say("Voice replies are on again, bro.");
+    return;
+  }
+
+  /* Memory display */
+  if (
+    /\b(show|tell me|what is) (my )?(saved )?memory\b/.test(t) ||
+    /\bwhat did i (say|tell) you\b/.test(t) ||
+    /\bwhat do you remember\b/.test(t)
+  ) {
+    showMemory();
+    say("I've opened your saved memory on screen.");
+    return;
+  }
+
+  if (/\b(forget|delete|clear) (all )?(my )?(saved )?memory\b/.test(t)) {
+    clearMemory();
+    return;
+  }
+
+  /* Name questions must be checked before general information search. */
+  if (/\b(what is my name|whats my name|do you know my name|who am i)\b/.test(t)) {
+    say(data.name
+      ? "Your name is " + data.name + ", bro."
+      : "You haven't told me your name yet.");
+    return;
+  }
+
+  /* Memory saving */
+  const memoryReply = memoryCommand(raw);
+
+  if (memoryReply) {
+    say(memoryReply);
+    return;
+  }
+
+  /* Recall saved preferences */
+  if (/\b(what did i say i like|what do i like|what do you remember about me)\b/.test(t)) {
+    const items = data.memories.filter(
+      item => /like|love|prefer|want|learning|building/i.test(item)
+    );
+
+    say(items.length
+      ? "Here is what I remember: " + items.join("; ")
+      : "I haven't saved anything about your likes yet. Say, remember that I like robotics.");
+    return;
+  }
+
+  /* Car commands from voice or typed messages */
+  const carCommand = carCmd(raw);
+
+  if (carCommand) {
+    if (carCommand === "UNCLEAR") {
+      say("I heard conflicting directions, bro. Please give one direction at a time.");
+    } else {
+      runCar(carCommand);
+    }
+
+    return;
+  }
+
+  /* Optional greetings */
+  if (
+    /^(hello|hi|hey|good morning|good afternoon|good evening)( bro)?$/.test(t)
+  ) {
+    say("Hey" + (data.name ? " " + data.name : " bro") + "! What can I help you with?");
+    return;
+  }
+
+  if (
+    /\b(how far|how you dey|how body|wetin dey happen|how things|how far bro)\b/.test(t)
+  ) {
+    say(
+      (data.name ? "How far, " + data.name : "How far, bro") +
+      "? I'm here and ready. Wetin you want make we do?"
+    );
+    return;
+  }
+
+  if (/\b(what can you do|your capabilities|help)\b/.test(t)) {
+    say(
+      "I can chat, remember selected details in this browser, calculate mathematics, " +
+      "search Wikipedia for some facts, and simulate car commands. " +
+      "I'm not yet connected to an ESP32 or physical motors, bro."
+    );
+    return;
+  }
+
+  if (/\bhow are you\b/.test(t)) {
+    say("I'm here and ready to help, bro. What are you working on?");
+    return;
+  }
+
+  if (/\b(thanks|thank you)\b/.test(t)) {
+    say("You're welcome, bro.");
+    return;
+  }
+
+  /* Mathematics */
+  const answer = calc(raw);
+
+  if (answer !== null) {
+    say(
+      typeof answer === "string" &&
+      /^(Cannot|Negative|Missing|Number)/.test(answer)
+        ? answer
+        : "The answer is " + answer + "."
+    );
+    return;
+  }
+
+  /* Money advice */
+  if (/\b(where can i get money|how can i make money|how to make money|where can i earn money|how can i earn money)\b/.test(t)) {
+    say(
+      "There are ways to earn, bro, but avoid anyone promising guaranteed money " +
+      "or asking you to pay first. You could build skills in website creation, " +
+      "design, editing, or help a trusted local business. Tell me what skills " +
+      "and device you have so we can consider realistic options."
+    );
+    return;
+  }
+
+  if (incomplete(t)) {
+    say("What are you asking about, bro? Give me a little more detail so I don't guess.");
+    return;
+  }
+
+  /* Online knowledge search */
+  const query = expandFollowup(raw) || raw;
+
+  if (
+    /\b(who is|who was|what is|what was|where is|when was|when did|why is|how does|how do|tell me about|explain|define|meaning of|search for|look up|find information about|latest|current price|price of|how much)\b/.test(t)
+  ) {
+    busy = true;
+    $("status").textContent = "Searching Wikipedia…";
+
+    try {
+      const result = await wiki(query);
+
+      if (!result) {
+        say("I couldn't find a useful Wikipedia result. Try asking more specifically.");
+        return;
+      }
+
+      data.topic = result.title;
+      data.lastQuestion = raw;
+      data.lastAnswer = result.text;
+      save();
+
+      say(
+        result.title + ": " + result.text.slice(0, 1100),
+        result.title,
+        raw
+      );
+    } catch {
+      say(
+        "I couldn't reach Wikipedia, bro. Check your internet connection. " +
+        "Wikipedia may not have current prices or the latest information, " +
+        "so I won't pretend I verified something I couldn't check."
+      );
+    } finally {
+      busy = false;
+      $("status").textContent = "Ready when you are.";
+    }
+
+    return;
+  }
+
+  say(
+    "I don't want to invent an answer, bro. Could you explain what you mean " +
+    "in another way? I can recognize some different phrases, but I don't " +
+    "yet have a full AI model for understanding every question."
+  );
+}
+
+/* ---------------- BUTTON EVENTS ---------------- */
+
+$("form").addEventListener("submit", event => {
+  event.preventDefault();
+  handle($("message").value);
+});
+
+$("listen").addEventListener("click", () => {
+  const SpeechRecognitionAPI =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognitionAPI) {
+    say("Voice input isn't supported in this browser. Try Chrome and allow microphone access, or type instead.");
+    return;
+  }
+
+  if (listening) {
+    try {
+      recognition.stop();
+    } catch {}
+    return;
+  }
+
+  if (window.speechSynthesis) speechSynthesis.cancel();
+
+  recognition = new SpeechRecognitionAPI();
+  recognition.lang = "en-US";
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    listening = true;
+    $("status").textContent = "Listening…";
+    $("voiceStatus").textContent = "Voice: listening";
+  };
+
+  recognition.onresult = event => {
+    listening = false;
+    $("voiceStatus").textContent = "Voice: ready";
+    handle(event.results[0][0].transcript);
+  };
+
+  recognition.onerror = event => {
+    listening = false;
+    $("status").textContent = "Microphone issue: " + event.error;
+    $("voiceStatus").textContent = "Voice: issue";
+  };
+
+  recognition.onend = () => {
+    listening = false;
+    $("voiceStatus").textContent = "Voice: ready";
+  };
+
+  try {
+    recognition.start();
+  } catch {
+    $("status").textContent = "Microphone busy. Try again.";
+  }
+});
+
+$("stopVoice").addEventListener("click", () => {
+  speechOn = false;
+
+  if (window.speechSynthesis) speechSynthesis.cancel();
+
+  $("status").textContent = "Voice replies off.";
+  add("Assistant", "Speech is off. Type “start talking” to turn it on again.");
+});
+
+$("stopCar").addEventListener("click", () => runCar("STOP"));
+
+$("showMemory").addEventListener("click", () => {
+  $("memoryPanel").classList.toggle("hide");
+
+  if (!$("memoryPanel").classList.contains("hide")) {
+    showMemory();
+  }
+});
+
+$("forget").addEventListener("click", clearMemory);
+
+$("clearChat").addEventListener("click", () => {
+  data.messages = [];
+  save();
+  $("chat").replaceChildren();
+  add("Assistant", "Chat display cleared. Saved memories remain.");
+});
+
+/* ---------------- STARTUP ---------------- */
+
+load();
+
+data.messages.forEach(message => {
+  add(message.who, message.text, false);
+});
+
+if (!data.messages.length) {
+  add(
+    "Assistant",
+    "Hey bro! I'm ready. You can chat, calculate, search some facts, save memories, or control the car simulation."
+  );
+}
+
+$("voiceStatus").textContent =
+  (window.SpeechRecognition || window.webkitSpeechRecognition)
+    ? "Voice: ready"
+    : "Voice: type available";
+</script>
+</body>
+</html>
