@@ -947,6 +947,41 @@ $("voiceStatus").textContent =
   (window.SpeechRecognition || window.webkitSpeechRecognition)
     ? "Voice: ready"
     : "Voice: type available";
+
 </script>
+  
+  <script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
+
+  import {
+    initializeAppCheck,
+    ReCaptchaEnterpriseProvider
+  } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app-check.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBe3CsKl5kfLLN84si_Df7vEfUwu_U5Ms0",
+    authDomain: "mujcoding-my-ai-bot.firebaseapp.com",
+    projectId: "mujcoding-my-ai-bot",
+    storageBucket: "mujcoding-my-ai-bot.firebasestorage.app",
+    messagingSenderId: "288841233065",
+    appId: "1:288841233065:web:72a9e056d7bf8e52b4afb8",
+    measurementId: "G-QKN4F6TXYQ"
+  };
+
+  const app = initializeApp(firebaseConfig);
+
+  const appCheck = initializeAppCheck(app, {
+    provider: new ReCaptchaEnterpriseProvider(
+      "6Ldltw8uAAAAAO0G3u_dnhmjKvdG6JvLrO7zcMrn"
+    ),
+    isTokenAutoRefreshEnabled: true
+  });
+
+  window.firebaseApp = app;
+  window.firebaseAppCheck = appCheck;
+
+  console.log("Firebase App Check initialized.");
+  </script>
+  
 </body>
 </html>
