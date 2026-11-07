@@ -950,14 +950,26 @@ $("voiceStatus").textContent =
 
 </script>
   
-  <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
+<script type="module">
+  // 1. Import Firebase services
+  import {
+    initializeApp
+  } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
 
   import {
     initializeAppCheck,
     ReCaptchaEnterpriseProvider
   } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app-check.js";
 
+  // 2. Import Firebase AI Logic
+  import {
+    getAI,
+    getGenerativeModel,
+    GoogleAIBackend
+  } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-ai.js";
+
+
+  // 3. Firebase project configuration
   const firebaseConfig = {
     apiKey: "AIzaSyBe3CsKl5kfLLN84si_Df7vEfUwu_U5Ms0",
     authDomain: "mujcoding-my-ai-bot.firebaseapp.com",
@@ -968,8 +980,14 @@ $("voiceStatus").textContent =
     measurementId: "G-QKN4F6TXYQ"
   };
 
+
+  // 4. Initialize Firebase
   const app = initializeApp(firebaseConfig);
 
+  window.firebaseApp = app;
+
+
+  // 5. Initialize Firebase App Check
   const appCheck = initializeAppCheck(app, {
     provider: new ReCaptchaEnterpriseProvider(
       "6Ldltw8uAAAAAO0G3u_dnhmjKvdG6JvLrO7zcMrn"
@@ -977,11 +995,50 @@ $("voiceStatus").textContent =
     isTokenAutoRefreshEnabled: true
   });
 
-  window.firebaseApp = app;
   window.firebaseAppCheck = appCheck;
 
-  console.log("Firebase App Check initialized.");
-  </script>
-  
+
+  // 6. Connect Firebase AI Logic to Gemini Developer API
+  const ai = getAI(app, {
+    backend: new GoogleAIBackend()
+  });
+
+
+  // 7. Select Gemini model
+  const model = getGenerativeModel(ai, {
+    model: "gemini-3.8-flash"
+  });
+
+
+  // 8. Make Gemini available to your existing assistant
+  window.askGemini = async function(prompt) {
+    try {
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+
+    } catch (error) {
+      console.error("Gemini error:", error);
+      throw error;
+    }
+  };
+
+
+  // 9. Temporary connection test
+  window.askGemini(
+    "Reply with: My AI assistant is connected!"
+  )
+    .then(reply => alert(reply))
+    .catch(error =>
+      alert("Connection failed: " + error.message)
+    );
+
+
+  // 10. Confirmation
+  console.log("Firebase initialized.");
+  console.log("App Check initialized.");
+  console.log("Gemini model initialized.");
+
+</script>
+
 </body>
 </html>
