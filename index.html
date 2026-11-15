@@ -791,52 +791,46 @@ async function handle(raw) {
     return;
   }
 
-  /* Online knowledge search */
+  /* Gemini AI: typed messages and recognized voice both reach this function. */
   const query = expandFollowup(raw) || raw;
+  busy = true;
+  $("status").textContent = "Thinking with Gemini…";
 
-  if (
-    /\b(who is|who was|what is|what was|where is|when was|when did|why is|how does|how do|tell me about|explain|define|meaning of|search for|look up|find information about|latest|current price|price of|how much)\b/.test(t)
-  ) {
-    busy = true;
-    $("status").textContent = "Searching Wikipedia…";
-
-    try {
-      const result = await wiki(query);
-
-      if (!result) {
-        say("I couldn't find a useful Wikipedia result. Try asking more specifically.");
-        return;
-      }
-
-      data.topic = result.title;
-      data.lastQuestion = raw;
-      data.lastAnswer = result.text;
-      save();
-
-      say(
-        result.title + ": " + result.text.slice(0, 1100),
-        result.title,
-        raw
-      );
-    } catch {
-      say(
-        "I couldn't reach Wikipedia, bro. Check your internet connection. " +
-        "Wikipedia may not have current prices or the latest information, " +
-        "so I won't pretend I verified something I couldn't check."
-      );
-    } finally {
-      busy = false;
-      $("status").textContent = "Ready when you are.";
+  try {
+    if (typeof window.askGemini !== "function") {
+      throw new Error("Gemini is still starting. Wait a moment and try again.");
     }
 
-    return;
-  }
+    const recentHistory = data.messages.slice(-10)
+      .map(item => item.who + ": " + item.text).join("\n");
+    const memoryContext = [
+      data.name ? "User's name: " + data.name : "",
+      data.memories.length ? "Saved details: " + data.memories.join("; ") : ""
+    ].filter(Boolean).join("\n");
 
-  say(
-    "I don't want to invent an answer, bro. Could you explain what you mean " +
-    "in another way? I can recognize some different phrases, but I don't " +
-    "yet have a full AI model for understanding every question."
-  );
+    const prompt =
+      "You are My AI Car Assistant. Be helpful, clear, accurate, and conversational. " +
+      "The car is simulation-only; no ESP32 or physical motors are connected. " +
+      "Never claim to control real motors. If unsure or information may be outdated, say so. " +
+      (memoryContext ? "\nUser context:\n" + memoryContext : "") +
+      (recentHistory ? "\nRecent conversation:\n" + recentHistory : "") +
+      "\nUser's new message: " + query;
+
+    const reply = await window.askGemini(prompt);
+    if (!reply || !reply.trim()) throw new Error("Gemini returned an empty reply.");
+
+    data.topic = query;
+    data.lastQuestion = raw;
+    say(reply.trim(), query, raw);
+  } catch (error) {
+    console.error("Assistant request failed:", error);
+    say("I couldn't get a reply from Gemini just now. Check your internet connection " +
+        "and Firebase App Check setup, then try again. Error: " +
+        (error.message || "Unknown error"));
+  } finally {
+    busy = false;
+    $("status").textContent = "Ready when you are.";
+  }
 }
 
 /* ---------------- BUTTON EVENTS ---------------- */
@@ -1023,17 +1017,9 @@ $("voiceStatus").textContent =
   };
 
 
-  // 9. Temporary connection test
-  window.askGemini(
-    "Reply with: My AI assistant is connected!"
-  )
-    .then(reply => alert(reply))
-    .catch(error =>
-      alert("Connection failed: " + error.message)
-    );
+  // Gemini is called when the user sends a message.
 
-
-  // 10. Confirmation
+  // 9. Confirmation
   console.log("Firebase initialized.");
   console.log("App Check initialized.");
   console.log("Gemini model initialized.");
