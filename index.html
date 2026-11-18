@@ -826,8 +826,6 @@ async function handle(raw) {
   $("status").textContent = "Thinking…";
 
   let streamingBubble = null;
-  let requestTimedOut = false;
-  let requestTimeout = null;
 
   try {
     if (typeof window.askGemini !== "function") {
@@ -863,20 +861,10 @@ async function handle(raw) {
     $("status").textContent = "Thinking…";
 
     const thisRequest = requestVersion;
-    activeRequestController = new AbortController();
-    requestTimedOut = false;
-    requestTimeout = setTimeout(() => {
-      requestTimedOut = true;
-      if (activeRequestController) activeRequestController.abort();
-    }, 45000);
 
-    const reply = await window.askGemini(prompt, (partialText) => {
-      if (thisRequest !== requestVersion) return;
-      messageText.textContent = partialText || "Thinking...";
-      $("chat").scrollTop = $("chat").scrollHeight;
-    }, activeRequestController.signal);
+    // Use the non-streaming request and wait for Gemini's complete answer.
+    const reply = await window.askGemini(prompt);
 
-    clearTimeout(requestTimeout);
     if (thisRequest !== requestVersion) return;
     if (!reply || !reply.trim()) throw new Error("EMPTY_REPLY");
 
@@ -885,12 +873,6 @@ async function handle(raw) {
     say(reply.trim(), query, raw, streamingBubble);
   } catch (error) {
     if (streamingBubble && streamingBubble.parentNode) streamingBubble.remove();
-    if (error && error.name === "AbortError") {
-      if (typeof requestTimedOut !== "undefined" && requestTimedOut) {
-        say("Gemini is taking too long to respond. Please try again.");
-      }
-      return;
-    }
 
     console.error("Assistant request failed:", error);
     const message = String(error && error.message || "");
@@ -902,7 +884,6 @@ async function handle(raw) {
       say("I couldn't get an answer just now. Please check your connection and try again.");
     }
   } finally {
-    if (typeof requestTimeout !== "undefined") clearTimeout(requestTimeout);
     activeRequestController = null;
     busy = false;
     $("status").textContent = "Ready when you are.";
@@ -1093,42 +1074,18 @@ $("voiceStatus").textContent =
 
 
   // 8. Make Gemini available to your existing assistant
-  window.askGemini = async function(prompt, onChunk, signal) {
+  // Non-streaming: receive the complete answer, then display and speak it.
+  window.askGemini = async function(prompt) {
     try {
-      const result = await model.generateContentStream(
-        prompt,
-        signal ? { signal } : undefined
-      );
-      let fullReply = "";
-
-      for await (const chunk of result.stream) {
-        const chunkText = chunk.text();
-        if (chunkText) {
-          fullReply += chunkText;
-          if (typeof onChunk === "function") onChunk(fullReply);
-        }
-      }
-
-      // Firebase also provides the final aggregated response.
-      // Use it if the stream did not provide any visible text chunks.
-      if (!fullReply.trim() && result.response) {
-        const finalResponse = await result.response;
-        fullReply = finalResponse.text() || "";
-        if (fullReply && typeof onChunk === "function") {
-          onChunk(fullReply);
-        }
-      }
-
-      return fullReply;
-
+      const result = await model.generateContent(prompt);
+      const response = result.response;
+      return response.text() || "";
     } catch (error) {
       console.error("Gemini error:", error);
       throw error;
     }
   };
 
-
-  // Gemini is called when the user sends a message.
 
   // 9. Confirmation
   console.log("Firebase initialized.");
