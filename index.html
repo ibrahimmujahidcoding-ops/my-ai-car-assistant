@@ -51,7 +51,7 @@ input{background:#f8fafc;color:#111827}
 <p id="status" class="status">Ready when you are.</p>
 
 <div class="row">
-<button id="listen" type="button">🎙️ Speak</button>
+<button id="listen" type="button">🎙️ Voice Input</button>
 <button id="stopVoice" type="button">🔇 Stop Talking</button>
 <button id="stopCar" type="button">🛑 Stop Car</button>
 <button id="showMemory" class="secondary" type="button">🧠 Show Memory</button>
@@ -102,12 +102,9 @@ input{background:#f8fafc;color:#111827}
 </section>
 
 <section class="panel">
-<strong>Important limits</strong>
+<strong>Privacy &amp; safety</strong>
 <p class="small">
-This prototype uses rules and Wikipedia search, not a full advanced AI model.
-It may misunderstand complicated questions. It does not have access to current
-prices or private accounts unless connected to an appropriate service.
-Never enter passwords here.
+Avoid entering passwords or sensitive personal information. Check important information before relying on it.
 </p>
 </section>
 </main>
@@ -131,6 +128,8 @@ let speechOn = true;
 let recognition = null;
 let listening = false;
 let busy = false;
+let activeRequestController = null;
+let requestVersion = 0;
 
 /* ---------------- MEMORY ---------------- */
 
@@ -734,35 +733,55 @@ async function handle(raw) {
     return;
   }
 
-  /* Optional greetings */
-  if (
-    /^(hello|hi|hey|good morning|good afternoon|good evening)( bro)?$/.test(t)
-  ) {
-    say("Hey" + (data.name ? " " + data.name : " bro") + "! What can I help you with?");
-    return;
-  }
+  /* Fast greetings: handled locally without calling Gemini. */
+  const greetingPatterns = [
+    /^(hello|hello there|hi|hi there|hey|hey there|hiya|howdy)( bro)?$/,
+    /^(good morning|good afternoon|good evening|good night)( bro)?$/,
+    /^(how far|how far na|how far bro|how you dey|how body|how market|how things|wetin dey happen|wetin dey|you dey okay|you good)( bro)?$/,
+    /^(how are you|how are you doing|how have you been|how is it going|hows it going|how s it going|whats up|what s up|sup|what is happening|how do you do)( bro)?$/,
+    /^(bawo ni|e kaaro|e kaasan|e kurole|kedu|ndewo|sannu|ina kwana|salaam|as salamu alaikum|assalamu alaikum|hola|bonjour|namaste|ciao|gday)$/
+  ];
 
-  if (
-    /\b(how far|how you dey|how body|wetin dey happen|how things|how far bro)\b/.test(t)
-  ) {
-    say(
-      (data.name ? "How far, " + data.name : "How far, bro") +
-      "? I'm here and ready. Wetin you want make we do?"
-    );
+  if (greetingPatterns.some(pattern => pattern.test(t))) {
+    const isNigerianGreeting =
+      /^(how far|how far na|how far bro|how you dey|how body|how market|how things|wetin dey happen|wetin dey|you dey okay|you good)( bro)?$/.test(t);
+
+    const isHowAreYou =
+      /^(how are you|how are you doing|how have you been|how is it going|hows it going|how s it going|how do you do)( bro)?$/.test(t);
+
+    const isGoodNight = /^good night( bro)?$/.test(t);
+
+    if (isGoodNight) {
+      say("Good night" + (data.name ? ", " + data.name : ", bro") + ". Rest well. What can I help you with before you go?");
+    } else if (isNigerianGreeting) {
+      say(
+        (data.name ? "How far, " + data.name : "How far, bro") +
+        "? I dey fine, thank you. Wetin you want make we do?"
+      );
+    } else if (isHowAreYou) {
+      say("I'm doing well, thank you for asking" + (data.name ? ", " + data.name : "") + ". How can I help you today?");
+    } else {
+      say("Hello" + (data.name ? ", " + data.name : ", bro") + "! Good to hear from you. What can I help you with?");
+    }
     return;
   }
 
   if (/\b(what can you do|your capabilities|help)\b/.test(t)) {
     say(
-      "I can chat, remember selected details in this browser, calculate mathematics, " +
-      "search Wikipedia for some facts, and simulate car commands. " +
+      "I can answer questions with Gemini, chat, remember selected details in this browser, " +
+      "calculate mathematics, and simulate car commands. " +
       "I'm not yet connected to an ESP32 or physical motors, bro."
     );
     return;
   }
 
-  if (/\bhow are you\b/.test(t)) {
-    say("I'm here and ready to help, bro. What are you working on?");
+  if (/^(what is your name|whats your name|who are you)$/.test(t)) {
+    say("I'm My AI Car Assistant. You can chat with me, ask questions, calculate, save memories, and try the car simulation.");
+    return;
+  }
+
+  if (/^(who made you|who created you)$/.test(t)) {
+    say("I'm the My AI Car Assistant project. I'm here to help with questions and the car simulation.");
     return;
   }
 
@@ -803,7 +822,7 @@ async function handle(raw) {
   /* Gemini AI: typed messages and recognized voice both reach this function. */
   const query = expandFollowup(raw) || raw;
   busy = true;
-  $("status").textContent = "Thinking with Gemini…";
+  $("status").textContent = "Thinking…";
 
   let streamingBubble = null;
 
@@ -812,7 +831,7 @@ async function handle(raw) {
       throw new Error("Gemini is still starting. Wait a moment and try again.");
     }
 
-    const recentHistory = data.messages.slice(-10)
+    const recentHistory = data.messages.slice(-6)
       .map(item => item.who + ": " + item.text).join("\n");
     const memoryContext = [
       data.name ? "User's name: " + data.name : "",
@@ -838,26 +857,38 @@ async function handle(raw) {
     streamingBubble.append(label, messageText);
     $("chat").append(streamingBubble);
     $("chat").scrollTop = $("chat").scrollHeight;
-    $("status").textContent = "Gemini is replying…";
+    $("status").textContent = "Thinking…";
+
+    const thisRequest = requestVersion;
+    activeRequestController = new AbortController();
 
     const reply = await window.askGemini(prompt, (partialText) => {
+      if (thisRequest !== requestVersion) return;
       messageText.textContent = partialText;
       $("chat").scrollTop = $("chat").scrollHeight;
-    });
-    if (!reply || !reply.trim()) throw new Error("Gemini returned an empty reply.");
+    }, activeRequestController.signal);
+
+    if (thisRequest !== requestVersion) return;
+    if (!reply || !reply.trim()) throw new Error("EMPTY_REPLY");
 
     data.topic = query;
     data.lastQuestion = raw;
     say(reply.trim(), query, raw, streamingBubble);
   } catch (error) {
-    if (streamingBubble && streamingBubble.parentNode) {
-      streamingBubble.remove();
-    }
+    if (streamingBubble && streamingBubble.parentNode) streamingBubble.remove();
+    if (error && error.name === "AbortError") return;
+
     console.error("Assistant request failed:", error);
-    say("I couldn't get a reply from Gemini just now. Check your internet connection " +
-        "and Firebase App Check setup, then try again. Error: " +
-        (error.message || "Unknown error"));
+    const message = String(error && error.message || "");
+    if (/high demand|temporarily unavailable|\\b500\\b/i.test(message)) {
+      say("The service is busy right now. Please wait a little and try again.");
+    } else if (/EMPTY_REPLY/.test(message)) {
+      say("I didn't receive an answer. Please try asking again.");
+    } else {
+      say("I couldn't get an answer just now. Please check your connection and try again.");
+    }
   } finally {
+    activeRequestController = null;
     busy = false;
     $("status").textContent = "Ready when you are.";
   }
@@ -924,13 +955,15 @@ $("listen").addEventListener("click", () => {
   }
 });
 
+function updateSpeechButton() {
+  $("stopVoice").textContent = speechOn ? "🔇 Stop Talking" : "🔊 Speak";
+  $("status").textContent = speechOn ? "Voice replies on." : "Voice replies off.";
+}
+
 $("stopVoice").addEventListener("click", () => {
-  speechOn = false;
-
-  if (window.speechSynthesis) speechSynthesis.cancel();
-
-  $("status").textContent = "Voice replies off.";
-  add("Assistant", "Speech is off. Type “start talking” to turn it on again.");
+  speechOn = !speechOn;
+  if (!speechOn && window.speechSynthesis) speechSynthesis.cancel();
+  updateSpeechButton();
 });
 
 $("stopCar").addEventListener("click", () => runCar("STOP"));
@@ -946,15 +979,25 @@ $("showMemory").addEventListener("click", () => {
 $("forget").addEventListener("click", clearMemory);
 
 $("clearChat").addEventListener("click", () => {
+  requestVersion++;
+  if (activeRequestController) {
+    activeRequestController.abort();
+    activeRequestController = null;
+  }
+  busy = false;
   data.messages = [];
+  data.lastQuestion = "";
+  data.lastAnswer = "";
   save();
   $("chat").replaceChildren();
-  add("Assistant", "Chat display cleared. Saved memories remain.");
+  $("status").textContent = "Ready when you are.";
+  add("Assistant", "Chat cleared. Saved memories remain.");
 });
 
 /* ---------------- STARTUP ---------------- */
 
 load();
+updateSpeechButton();
 
 data.messages.forEach(message => {
   add(message.who, message.text, false);
@@ -1035,9 +1078,9 @@ $("voiceStatus").textContent =
 
 
   // 8. Make Gemini available to your existing assistant
-  window.askGemini = async function(prompt, onChunk) {
+  window.askGemini = async function(prompt, onChunk, signal) {
     try {
-      const result = await model.generateContentStream(prompt);
+      const result = await model.generateContentStream(prompt, signal ? { signal } : undefined);
       let fullReply = "";
 
       for await (const chunk of result.stream) {
