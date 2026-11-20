@@ -645,6 +645,139 @@ function isLikelyKnowledgeQuestion(text) {
   return /\b(who is|what is|what are|when did|when was|where is|where was|which country|which state|how does|how did|who founded|who invented|define|explain|meaning of|capital of|population of|history of)\b/i.test(norm(text));
 }
 
+/* ---------------- AI ERROR HANDLING ---------------- */
+
+const AI_PAUSE_KEY = "my_ai_assistant_ai_pause_v1";
+
+function getErrorText(error) {
+  const parts = [];
+  const addPart = value => {
+    if (typeof value === "string" && value) parts.push(value);
+    else if (value && typeof value === "object") {
+      try { parts.push(JSON.stringify(value)); } catch {}
+    }
+  };
+  if (error) {
+    addPart(error.message);
+    addPart(error.code);
+    addPart(error.status);
+    addPart(error.statusText);
+    addPart(error.details);
+    addPart(error.errorDetails);
+    addPart(error.customData);
+    addPart(error.cause);
+  }
+  return parts.join(" ").toLowerCase();
+}
+
+function classifyAIError(error) {
+  const text = getErrorText(error);
+  const code = String(error && error.code || "").toLowerCase();
+  const status = Number(error && (error.status || error.statusCode));
+
+  // Only an explicit daily-request quota triggers an all-day pause.
+  // A generic 429 / RESOURCE_EXHAUSTED is ambiguous.
+  const dailyLimit =
+    /\b(requests?\s*(per|\/)\s*day|daily\s+(request\s+)?quota|quota\s+(for\s+)?(requests?\s*)?(per|\/)\s*day|rpd\b|requestsperday|perdayrequestquota)\b/i.test(text);
+  if (dailyLimit) return { type: "daily", cooldownMs: 0 };
+
+  if (/app.?check|permission_denied|unauthenticated|invalid api key|api key not valid|not authorized|forbidden|403\b|401\b/.test(text) ||
+      status === 401 || status === 403 ||
+      code.includes("permission-denied") || code.includes("unauthenticated")) {
+    return { type: "configuration", cooldownMs: 0 };
+  }
+
+  if (/requests?\s*(per|\/)\s*minute|\brpm\b|rate.?limit|too many requests|429\b|resource_exhausted/.test(text) ||
+      status === 429 || code.includes("resource-exhausted")) {
+    return { type: "rate", cooldownMs: 45000 };
+  }
+
+  if (/overloaded|high demand|capacity|temporarily unavailable|503\b|502\b|500\b|server error/.test(text) ||
+      [500, 502, 503, 504].includes(status)) {
+    return { type: "temporary", cooldownMs: 30000 };
+  }
+
+  if (/failed to fetch|network|offline|internet|connection|timeout|timed out|load failed/.test(text) ||
+      (error && error.name === "TypeError")) {
+    return { type: "network", cooldownMs: 20000 };
+  }
+
+  if (/empty_reply/.test(text)) return { type: "empty", cooldownMs: 0 };
+  if (/aborterror|request cancelled/.test(text)) return { type: "cancelled", cooldownMs: 0 };
+  return { type: "unknown", cooldownMs: 0 };
+}
+
+function getNextPacificMidnight(fromTime = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hourCycle: "h23"
+  });
+  const parts = Object.fromEntries(
+    formatter.formatToParts(fromTime)
+      .filter(part => part.type !== "literal")
+      .map(part => [part.type, Number(part.value)])
+  );
+  const nextDate = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + 1));
+  const target = {
+    year: nextDate.getUTCFullYear(),
+    month: nextDate.getUTCMonth() + 1,
+    day: nextDate.getUTCDate()
+  };
+
+  // Resolve midnight in Pacific time; this naturally handles PST/PDT changes.
+  let guess = Date.UTC(target.year, target.month - 1, target.day);
+  for (let i = 0; i < 4; i++) {
+    const shown = Object.fromEntries(
+      formatter.formatToParts(new Date(guess))
+        .filter(part => part.type !== "literal")
+        .map(part => [part.type, Number(part.value)])
+    );
+    const shownAsUTC = Date.UTC(shown.year, shown.month - 1, shown.day,
+      shown.hour, shown.minute, shown.second);
+    const targetAsUTC = Date.UTC(target.year, target.month - 1, target.day);
+    guess += targetAsUTC - shownAsUTC;
+  }
+  return guess;
+}
+
+function getAIPause() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(AI_PAUSE_KEY) || "null");
+    if (!saved || !Number.isFinite(saved.until) || saved.until <= Date.now()) {
+      localStorage.removeItem(AI_PAUSE_KEY);
+      return null;
+    }
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+function setAIPause(until, reason) {
+  try { localStorage.setItem(AI_PAUSE_KEY, JSON.stringify({ until, reason })); } catch {}
+}
+
+function pauseNotice(pause) {
+  if (pause && pause.reason === "daily") {
+    const resetText = new Intl.DateTimeFormat("en-NG", {
+      timeZone: "Africa/Lagos", hour: "numeric", minute: "2-digit"
+    }).format(new Date(pause.until));
+    return "I can't answer with AI right now because the daily request allowance appears to be used up. " +
+      "It should become available again around " + resetText + " Nigeria time.\n\n" +
+      "You can still use Wikipedia fact search (when internet is available), mathematics, " +
+      "basic greetings, saved memory, voice features supported by your browser, and the car simulation.";
+  }
+  return "I'm temporarily unable to answer that request. Please try again shortly. " +
+    "You can still use mathematics, basic greetings, saved memory, supported voice features, " +
+    "the car simulation, and Wikipedia fact search when internet is available.";
+}
+
+function canUseWikiAfterError(errorType) {
+  return ["daily", "rate", "temporary", "network"].includes(errorType);
+}
+
 /* ---------------- MAIN ASSISTANT ---------------- */
 
 async function handle(raw) {
@@ -772,7 +905,7 @@ async function handle(raw) {
 
   if (/\b(what can you do|your capabilities|help)\b/.test(t)) {
     say(
-      "I can answer questions with Gemini, chat, remember selected details in this browser, " +
+      "I can answer questions, chat, remember selected details in this browser, " +
       "calculate mathematics, and simulate car commands. " +
       "I'm not yet connected to an ESP32 or physical motors, bro."
     );
@@ -823,8 +956,33 @@ async function handle(raw) {
     return;
   }
 
-  /* Gemini AI: typed messages and recognized voice both reach this function. */
+  /* AI answers: typed messages and recognized voice both reach this function. */
   const query = expandFollowup(raw) || raw;
+
+  // Local commands above remain available while a saved AI pause is active.
+  const savedPause = getAIPause();
+  if (savedPause) {
+    if (savedPause.reason === "daily" && isLikelyKnowledgeQuestion(query)) {
+      busy = true;
+      $("status").textContent = "Searching a factual source…";
+      try {
+        const result = await wiki(query);
+        if (result && result.text) {
+          say("I can't answer with AI right now, but I found this Wikipedia result:\n\n" +
+            result.title + "\n" + result.text + "\n\nSource: Wikipedia", query, raw);
+          return;
+        }
+      } catch (wikiError) {
+        console.warn("Wikipedia fallback failed:", wikiError);
+      } finally {
+        busy = false;
+        $("status").textContent = "Ready when you are.";
+      }
+    }
+    say(pauseNotice(savedPause));
+    return;
+  }
+
   busy = true;
   $("status").textContent = "Thinking…";
 
@@ -871,7 +1029,7 @@ async function handle(raw) {
       const target = streamingBubble.querySelector(".assistant-text");
       if (target) target.textContent = partialText;
       $("chat").scrollTop = $("chat").scrollHeight;
-      $("status").textContent = "Gemini is replying…";
+      $("status").textContent = "Assistant is replying…";
     }, activeRequestController ? activeRequestController.signal : undefined);
 
     if (thisRequest !== requestVersion) return;
@@ -892,14 +1050,31 @@ async function handle(raw) {
   } catch (error) {
     console.error("Assistant request failed:", error);
 
-    if (isLikelyKnowledgeQuestion(query)) {
+    const failure = classifyAIError(error);
+    let pause = null;
+
+    if (failure.type === "daily") {
+      const resetAt = getNextPacificMidnight();
+      setAIPause(resetAt, "daily");
+      pause = { until: resetAt, reason: "daily" };
+    } else if (failure.cooldownMs > 0) {
+      const until = Date.now() + failure.cooldownMs;
+      setAIPause(until, failure.type);
+      pause = { until, reason: failure.type };
+    }
+
+    // Only temporary/quota/network failures may use Wikipedia as fallback.
+    // Setup, permission and unknown errors are not silently hidden by it.
+    if (isLikelyKnowledgeQuestion(query) && canUseWikiAfterError(failure.type)) {
       try {
-        $("status").textContent = "Gemini unavailable. Checking Wikipedia…";
+        $("status").textContent = "Trying a factual source…";
         const result = await wiki(query);
         if (result && result.text) {
-          say("Gemini couldn't answer just now, so I checked Wikipedia.\n\n" +
-            result.title + "\n" + result.text + "\n\nSource: Wikipedia",
-            query, raw, streamingBubble);
+          const intro = failure.type === "daily"
+            ? "I can't answer with AI right now, but I found this Wikipedia result:"
+            : "I couldn't complete the AI answer, so here's a Wikipedia result:";
+          say(intro + "\n\n" + result.title + "\n" + result.text +
+            "\n\nSource: Wikipedia", query, raw, streamingBubble);
           return;
         }
       } catch (wikiError) {
@@ -908,13 +1083,19 @@ async function handle(raw) {
     }
 
     if (streamingBubble && streamingBubble.parentNode) streamingBubble.remove();
-    const message = String(error && error.message || "");
-    if (/high demand|temporarily unavailable|\\b500\\b/i.test(message)) {
-      say("The service is busy right now. Please wait a little and try again.");
-    } else if (/EMPTY_REPLY/.test(message)) {
+
+    if (failure.type === "daily") {
+      say(pauseNotice(pause));
+    } else if (failure.type === "rate" || failure.type === "temporary") {
+      say("I'm receiving too many requests or the service is temporarily busy. Please wait a short while and try again.");
+    } else if (failure.type === "network") {
+      say("I couldn't connect just now. Please check your internet connection and try again.");
+    } else if (failure.type === "configuration") {
+      say("I can't complete that request right now. Please try again later. Other available assistant features are still ready.");
+    } else if (failure.type === "empty") {
       say("I didn't receive an answer. Please try asking again.");
-    } else {
-      say("I couldn't get an answer just now. Please check your connection and try again.");
+    } else if (failure.type !== "cancelled") {
+      say("I couldn't complete that request just now. Please try again in a moment.");
     }
   } finally {
     activeRequestController = null;
