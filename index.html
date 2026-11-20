@@ -51,7 +51,7 @@ input{background:#f8fafc;color:#111827}
 <p id="status" class="status">Ready when you are.</p>
 
 <div class="row">
-<button id="listen" type="button">🎙️ Speak</button>
+<button id="listen" type="button">🎙️ Voice Input</button>
 <button id="stopVoice" type="button">🔇 Stop Talking</button>
 <button id="stopCar" type="button">🛑 Stop Car</button>
 <button id="showMemory" class="secondary" type="button">🧠 Show Memory</button>
@@ -102,12 +102,9 @@ input{background:#f8fafc;color:#111827}
 </section>
 
 <section class="panel">
-<strong>Important limits</strong>
+<strong>Privacy &amp; safety</strong>
 <p class="small">
-This prototype uses rules and Wikipedia search, not a full advanced AI model.
-It may misunderstand complicated questions. It does not have access to current
-prices or private accounts unless connected to an appropriate service.
-Never enter passwords here.
+Avoid entering passwords or sensitive personal information. Check important information before relying on it.
 </p>
 </section>
 </main>
@@ -131,6 +128,8 @@ let speechOn = true;
 let recognition = null;
 let listening = false;
 let busy = false;
+let activeRequestController = null;
+let requestVersion = 0;
 
 /* ---------------- MEMORY ---------------- */
 
@@ -168,6 +167,7 @@ function add(who, text, store = true) {
   label.textContent = who;
 
   const message = document.createElement("span");
+  message.className = "assistant-text";
   message.textContent = text;
 
   box.append(label, message);
@@ -181,8 +181,16 @@ function add(who, text, store = true) {
   }
 }
 
-function say(text, topic = null, question = null) {
-  add("Assistant", text);
+function say(text, topic = null, question = null, existingBubble = null) {
+  if (existingBubble) {
+    const messageText = existingBubble.querySelector(".assistant-text");
+    if (messageText) messageText.textContent = text;
+    data.messages.push({ who: "Assistant", text });
+    data.messages = data.messages.slice(-60);
+    save();
+  } else {
+    add("Assistant", text);
+  }
 
   data.lastAnswer = text;
 
@@ -209,14 +217,27 @@ function say(text, topic = null, question = null) {
 /* ---------------- MESSAGE NORMALIZATION ---------------- */
 
 function norm(s) {
-  return s
+  return String(s || "")
     .toLowerCase()
     .normalize("NFKC")
-    .replace(/[’']/g, "")
-    .replace(/[?!,.;:]/g, " ")
-    .replace(/\bforw\s*ard|forwrd|forword|forwad|foward\b/g, "forward")
-    .replace(/\bback\s*ward\b/g, "backward")
-    .replace(/\brigtht?\b/g, "right")
+    .replace(/[’‘]/g, "'")
+    .replace(/[?!,.;:]+/g, " ")
+    .replace(/\bhowfar\b/g, "how far")
+    .replace(/\b(helo|helllo|heloo)\b/g, "hello")
+    .replace(/\b(hii|hiii)\b/g, "hi")
+    .replace(/\b(gud|goood)\s+(morning|afternoon|evening)\b/g, "good $2")
+    .replace(/\b(thnks|tanks)\b/g, "thanks")
+    .replace(/\b(forw\s*ard|forwrd|forword|forwad|foward)\b/g, "forward")
+    .replace(/\b(back\s*ward|bakward|backword)\b/g, "backward")
+    .replace(/\b(rigtht?|rite)\b/g, "right")
+    .replace(/\b(lefft?)\b/g, "left")
+    .replace(/\b(plz|pls)\b/g, "please")
+    .replace(/\bwat\b/g, "what")
+    .replace(/\bwich\b/g, "which")
+    .replace(/\bwen\b/g, "when")
+    .replace(/\bwer\b/g, "where")
+    .replace(/\bdis\b/g, "this")
+    .replace(/\bdat\b/g, "that")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -412,173 +433,146 @@ document.querySelectorAll("[data-car]").forEach(button => {
 
 /* ---------------- MATHEMATICS ---------------- */
 
+/* Safe maths parser: arithmetic, brackets, powers, percentages,
+   roots, factorials, constants, trigonometry and logarithms. */
+
 function mathTokens(raw) {
-  let s = raw.toLowerCase().trim()
-    .replace(/^(what is|calculate|work out|solve|compute)\s+/, "")
-    .replace(/\?+$/, "");
+  let s = String(raw || "").toLowerCase().trim()
+    .replace(/,/g, "")
+    .replace(/\b(what is|calculate|work out|solve|compute|evaluate|find|please)\b/g, " ")
+    .replace(/square root of|square root/g, "sqrt ")
+    .replace(/cube root of|cube root/g, "cbrt ")
+    .replace(/to the power of|raised to the power of|raised to/g, "^")
+    .replace(/multiplied by|multiply by|multiplied|multiply|times|×/g, "*")
+    .replace(/\s+x\s+/g, " * ")
+    .replace(/divided by|divide by|divided|divide|÷/g, "/")
+    .replace(/factorial of\s*/g, "factorial ")
+    .replace(/(\d+(?:\.\d+)?)\s+factorial\b/g, "$1!")
+    .replace(/\bplus\b|\badd\b/g, "+")
+    .replace(/\bminus\b|\bsubtract\b/g, "-")
+    .replace(/sine of|sine/g, "sin")
+    .replace(/cosine of|cosine/g, "cos")
+    .replace(/tangent of|tangent/g, "tan")
+    .replace(/natural log of|natural log/g, "ln")
+    .replace(/logarithm of|log of/g, "log")
+    .replace(/absolute value of/g, "abs ")
+    .replace(/square of/g, "^2")
+    .replace(/cube of/g, "^3")
+    .replace(/√\s*/g, "sqrt ")
+    .replace(/(\d+(?:\.\d+)?)\s*percent\s+of\s*(\d+(?:\.\d+)?)/g, "($1/100)*($2)")
+    .replace(/(\d+(?:\.\d+)?)\s*%\s*of\s*(\d+(?:\.\d+)?)/g, "($1/100)*($2)")
+    .replace(/(\d+(?:\.\d+)?)\s*%/g, "($1/100)")
+    .replace(/\bpi\b/g, " pi ")
+    .replace(/\be\b/g, " e ")
+    .replace(/\bdegrees?\b/g, " ")
+    .replace(/\s+/g, " ").trim();
 
-  s = s
-    .replace(/multiplied by|multiply by|times|multiplied|multiply|×/g, " * ")
-    .replace(/divided by|divide by|divided|divide|÷/g, " / ")
-    .replace(/plus|add/g, " + ")
-    .replace(/minus|subtract/g, " - ")
-    .replace(/raised to the power of|raised to|to the power of|power of/g, " ^ ")
-    .replace(/square root of|square root/g, " sqrt ")
-    .replace(/(\d+(?:\.\d+)?)\s*percent of\s*(\d+(?:\.\d+)?)/g, "($1 / 100 * $2)")
-    .replace(/(\d+(?:\.\d+)?)\s*%\s*of\s*(\d+(?:\.\d+)?)/g, "($1 / 100 * $2)")
-    .replace(/(\d+(?:\.\d+)?)\s*%/g, "($1 / 100)")
-    .replace(/√\s*/g, " sqrt ")
-    .replace(/\s+/g, " ")
-    .trim();
-
+  const names = ["sqrt","cbrt","sin","cos","tan","asin","acos","atan","log","ln","abs","floor","ceil","round","factorial"];
   const tokens = [];
   let i = 0;
-
   while (i < s.length) {
-    if (/\s/.test(s[i])) {
-      i++;
-      continue;
-    }
-
+    if (/\s/.test(s[i])) { i++; continue; }
     const rest = s.slice(i);
-    const number = rest.match(/^(?:\d+(?:\.\d*)?|\.\d+)/);
-
-    if (number) {
-      tokens.push(number[0]);
-      i += number[0].length;
-      continue;
-    }
-
-    const sqrt = rest.match(/^sqrt\b/);
-
-    if (sqrt) {
-      tokens.push("sqrt");
-      i += 4;
-      continue;
-    }
-
-    if ("()+-*/^".includes(s[i])) {
-      tokens.push(s[i++]);
-      continue;
-    }
-
+    const num = rest.match(/^(?:\d+(?:\.\d*)?|\.\d+)/);
+    if (num) { tokens.push(num[0]); i += num[0].length; continue; }
+    const fn = names.find(n => new RegExp("^" + n + "\\b").test(rest));
+    if (fn) { tokens.push(fn); i += fn.length; continue; }
+    const constant = rest.match(/^(pi|e)\b/);
+    if (constant) { tokens.push(constant[1]); i += constant[1].length; continue; }
+    if ("()+-*/^!".includes(s[i])) { tokens.push(s[i++]); continue; }
     return null;
   }
 
-  return tokens;
+  // Implicit multiplication: 2pi, 2(3+4), and (2)(3).
+  const out = [];
+  for (const token of tokens) {
+    const prev = out[out.length - 1];
+    const ends = prev !== undefined && (/^(?:\d+(?:\.\d*)?|\.\d+|pi|e|\))$/.test(prev) || prev === "!");
+    const starts = /^(?:\d|pi$|e$|\(|sqrt$|cbrt$|sin$|cos$|tan$|asin$|acos$|atan$|log$|ln$|abs$|floor$|ceil$|round$|factorial$)/.test(token);
+    if (ends && starts) out.push("*");
+    out.push(token);
+  }
+  return out;
 }
 
 function calc(raw) {
-  if (!/\d/.test(raw)) return null;
-
+  if (!/\d|\b(pi|sin|cos|tan|sqrt|log|ln|factorial)\b/i.test(raw)) return null;
   const tokens = mathTokens(raw);
   if (!tokens || !tokens.length) return null;
-
   let i = 0;
 
-  function expression() {
-    return add();
-  }
-
+  function expression() { return add(); }
   function add() {
-    let value = multiply();
-
+    let v = multiply();
     while (tokens[i] === "+" || tokens[i] === "-") {
-      const operator = tokens[i++];
-      const right = multiply();
-
-      value = operator === "+" ? value + right : value - right;
+      const op = tokens[i++], r = multiply();
+      v = op === "+" ? v + r : v - r;
     }
-
-    return value;
+    return v;
   }
-
   function multiply() {
-    let value = power();
-
+    let v = power();
     while (tokens[i] === "*" || tokens[i] === "/") {
-      const operator = tokens[i++];
-      const right = power();
-
-      if (operator === "/" && right === 0) {
-        throw Error("Cannot divide by zero.");
-      }
-
-      value = operator === "*" ? value * right : value / right;
+      const op = tokens[i++], r = power();
+      if (op === "/" && r === 0) throw Error("Cannot divide by zero.");
+      v = op === "*" ? v * r : v / r;
     }
-
-    return value;
+    return v;
   }
-
   function power() {
-    let value = unary();
-
-    if (tokens[i] === "^") {
+    let v = unary();
+    if (tokens[i] === "^") { i++; v = Math.pow(v, power()); }
+    while (tokens[i] === "!") {
       i++;
-      value = Math.pow(value, power());
+      if (!Number.isInteger(v) || v < 0 || v > 170) throw Error("Factorial needs a whole number from 0 to 170.");
+      let f = 1; for (let n = 2; n <= v; n++) f *= n; v = f;
     }
-
-    return value;
+    return v;
   }
-
   function unary() {
-    if (tokens[i] === "+") {
-      i++;
-      return unary();
-    }
-
-    if (tokens[i] === "-") {
-      i++;
-      return -unary();
-    }
-
-    if (tokens[i] === "sqrt") {
-      i++;
-      const value = unary();
-
-      if (value < 0) {
-        throw Error("Negative square roots are not supported.");
+    if (tokens[i] === "+") { i++; return unary(); }
+    if (tokens[i] === "-") { i++; return -unary(); }
+    const functions = ["sqrt","cbrt","sin","cos","tan","asin","acos","atan","log","ln","abs","floor","ceil","round","factorial"];
+    if (functions.includes(tokens[i])) {
+      const fn = tokens[i++], x = unary();
+      if ((fn === "sqrt" && x < 0) || ((fn === "log" || fn === "ln") && x <= 0))
+        throw Error(fn === "sqrt" ? "A real square root cannot use a negative number." : "Logarithms need a number greater than zero.");
+      if (fn === "sqrt") return Math.sqrt(x);
+      if (fn === "cbrt") return Math.cbrt(x);
+      if (fn === "sin") return Math.sin(x * Math.PI / 180);
+      if (fn === "cos") return Math.cos(x * Math.PI / 180);
+      if (fn === "tan") return Math.tan(x * Math.PI / 180);
+      if (fn === "asin") return Math.asin(x) * 180 / Math.PI;
+      if (fn === "acos") return Math.acos(x) * 180 / Math.PI;
+      if (fn === "atan") return Math.atan(x) * 180 / Math.PI;
+      if (fn === "log") return Math.log10(x);
+      if (fn === "ln") return Math.log(x);
+      if (fn === "abs") return Math.abs(x);
+      if (fn === "floor") return Math.floor(x);
+      if (fn === "ceil") return Math.ceil(x);
+      if (fn === "round") return Math.round(x);
+      if (fn === "factorial") {
+        if (!Number.isInteger(x) || x < 0 || x > 170) throw Error("Factorial needs a whole number from 0 to 170.");
+        let f = 1; for (let n = 2; n <= x; n++) f *= n; return f;
       }
-
-      return Math.sqrt(value);
     }
-
     if (tokens[i] === "(") {
-      i++;
-      const value = expression();
-
-      if (tokens[i++] !== ")") {
-        throw Error("Missing closing bracket.");
-      }
-
-      return value;
+      i++; const v = expression();
+      if (tokens[i++] !== ")") throw Error("Missing closing bracket.");
+      return v;
     }
-
-    const number = tokens[i++];
-
-    if (number === undefined ||
-        !/^(\d+(\.\d*)?|\.\d+)$/.test(number)) {
-      throw Error("Number expected.");
-    }
-
-    return Number(number);
+    const t = tokens[i++];
+    if (t === "pi") return Math.PI;
+    if (t === "e") return Math.E;
+    if (t === undefined || !/^(\d+(\.\d*)?|\.\d+)$/.test(t)) throw Error("Please check the maths expression.");
+    return Number(t);
   }
 
   try {
     const value = expression();
-
-    if (i !== tokens.length ||
-        !Number.isFinite(value) ||
-        Math.abs(value) > 1e15) {
-      return null;
-    }
-
-    return Number.isInteger(value)
-      ? String(value)
-      : String(Number(value.toPrecision(10)));
-  } catch (error) {
-    return error.message;
-  }
+    if (i !== tokens.length || !Number.isFinite(value) || Math.abs(value) > 1e15) return null;
+    return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(10)));
+  } catch (err) { return err.message; }
 }
 
 /* ---------------- FOLLOW-UP QUESTIONS ---------------- */
@@ -610,27 +604,45 @@ function expandFollowup(raw) {
 
 /* ---------------- WIKIPEDIA SEARCH ---------------- */
 
+function wikiTerms(text) {
+  return norm(text).replace(/\b(the|a|an|is|are|was|were|of|for|to|in|on|who|what|when|where|why|how)\b/g, " ")
+    .replace(/\s+/g, " ").trim().split(" ").filter(x => x.length > 2);
+}
+
 async function wiki(query) {
-  const url =
-    "https://en.wikipedia.org/w/api.php?action=query" +
-    "&generator=search&gsrsearch=" + encodeURIComponent(query) +
-    "&gsrnamespace=0&gsrlimit=1&prop=extracts" +
-    "&exintro=1&explaintext=1&exchars=1100" +
-    "&format=json&origin=*";
+  const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srnamespace=0&srlimit=6&format=json&origin=*&srsearch=" + encodeURIComponent(query);
+  const response = await fetch(searchUrl);
+  if (!response.ok) throw Error("Wikipedia search failed");
+  const json = await response.json();
+  const results = json.query && json.query.search ? json.query.search : [];
+  if (!results.length) return null;
 
-  const response = await fetch(url);
+  const terms = wikiTerms(query);
+  const ranked = results.map((item, index) => {
+    const title = wikiTerms(item.title);
+    const snippet = wikiTerms(item.snippet.replace(/<[^>]*>/g, " "));
+    const titleHits = terms.filter(term => title.some(t => t.includes(term) || term.includes(t))).length;
+    const snippetHits = terms.filter(term => snippet.includes(term)).length;
+    return { item, score: titleHits * 4 + snippetHits + (index === 0 ? 0.2 : 0) };
+  }).sort((x, y) => y.score - x.score).slice(0, 3);
 
-  if (!response.ok) throw Error("Search failed");
+  const pages = await Promise.all(ranked.map(async candidate => {
+    const url = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&exchars=1300&format=json&origin=*&titles=" + encodeURIComponent(candidate.item.title);
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const data = await r.json();
+    const page = data.query ? Object.values(data.query.pages || {})[0] : null;
+    return page && page.extract ? { title: page.title, text: page.extract, score: candidate.score } : null;
+  }));
+  return pages.filter(Boolean).sort((x, y) => y.score - x.score)[0] || null;
+}
 
-  const result = await response.json();
-  const pages = result.query ? Object.values(result.query.pages) : [];
+function needsWikiFallback(answer) {
+  return /\b(i do not know|i don't know|not sure|cannot confirm|can't confirm|no reliable information|unable to answer|i cannot answer)\b/i.test(answer || "");
+}
 
-  return pages.length
-    ? {
-        title: pages[0].title,
-        text: pages[0].extract || ""
-      }
-    : null;
+function isLikelyKnowledgeQuestion(text) {
+  return /\b(who is|what is|what are|when did|when was|where is|where was|which country|which state|how does|how did|who founded|who invented|define|explain|meaning of|capital of|population of|history of)\b/i.test(norm(text));
 }
 
 /* ---------------- MAIN ASSISTANT ---------------- */
@@ -725,35 +737,55 @@ async function handle(raw) {
     return;
   }
 
-  /* Optional greetings */
-  if (
-    /^(hello|hi|hey|good morning|good afternoon|good evening)( bro)?$/.test(t)
-  ) {
-    say("Hey" + (data.name ? " " + data.name : " bro") + "! What can I help you with?");
-    return;
-  }
+  /* Fast greetings: handled locally without calling Gemini. */
+  const greetingPatterns = [
+    /^(hello|hello there|hi|hi there|hey|hey there|hiya|howdy)( bro)?$/,
+    /^(good morning|good afternoon|good evening|good night)( bro)?$/,
+    /^(how far|how far na|how far o|how far now|how far bro|how you dey|how you dey today|how body|how market|how things|wetin dey happen|wetin dey|wetin sup|how e be|you dey okay|you dey alright|you good|you don chop|hope say you dey fine|how work|how family)( bro)?$/,
+    /^(how are you|how are you doing|how have you been|how is it going|hows it going|how s it going|whats up|what s up|sup|what is happening|how do you do|how is life|how is everything|how are things|long time no see|nice to meet you|good to see you)( bro)?$/,
+    /^(bawo ni|e kaaro|e kaasan|e kurole|eku abo|eku ile|kedu|ndewo|sannu|ina kwana|ya gida|sannu da zuwa|salaam|as salamu alaikum|assalamu alaikum|wa alaikum assalam|hola|buenos dias|buenas tardes|buenas noches|bonjour|bonsoir|salut|namaste|namaskar|ciao|gday|howdy|shalom|merhaba|konnichiwa|annyeong|sawubona)$/
+  ];
 
-  if (
-    /\b(how far|how you dey|how body|wetin dey happen|how things|how far bro)\b/.test(t)
-  ) {
-    say(
-      (data.name ? "How far, " + data.name : "How far, bro") +
-      "? I'm here and ready. Wetin you want make we do?"
-    );
+  if (greetingPatterns.some(pattern => pattern.test(t))) {
+    const isNigerianGreeting =
+      /^(how far|how far na|how far o|how far now|how far bro|how you dey|how you dey today|how body|how market|how things|wetin dey happen|wetin dey|wetin sup|how e be|you dey okay|you dey alright|you good|you don chop|hope say you dey fine|how work|how family)( bro)?$/.test(t);
+
+    const isHowAreYou =
+      /^(how are you|how are you doing|how have you been|how is it going|hows it going|how s it going|how do you do)( bro)?$/.test(t);
+
+    const isGoodNight = /^good night( bro)?$/.test(t);
+
+    if (isGoodNight) {
+      say("Good night" + (data.name ? ", " + data.name : ", bro") + ". Rest well. What can I help you with before you go?");
+    } else if (isNigerianGreeting) {
+      say(
+        (data.name ? "How far, " + data.name : "How far, bro") +
+        "? I dey fine, thank you. Wetin you want make we do?"
+      );
+    } else if (isHowAreYou) {
+      say("I'm doing well, thank you for asking" + (data.name ? ", " + data.name : "") + ". How can I help you today?");
+    } else {
+      say("Hello" + (data.name ? ", " + data.name : ", bro") + "! Good to hear from you. What can I help you with?");
+    }
     return;
   }
 
   if (/\b(what can you do|your capabilities|help)\b/.test(t)) {
     say(
-      "I can chat, remember selected details in this browser, calculate mathematics, " +
-      "search Wikipedia for some facts, and simulate car commands. " +
+      "I can answer questions with Gemini, chat, remember selected details in this browser, " +
+      "calculate mathematics, and simulate car commands. " +
       "I'm not yet connected to an ESP32 or physical motors, bro."
     );
     return;
   }
 
-  if (/\bhow are you\b/.test(t)) {
-    say("I'm here and ready to help, bro. What are you working on?");
+  if (/^(what is your name|whats your name|who are you)$/.test(t)) {
+    say("I'm My AI Car Assistant. You can chat with me, ask questions, calculate, save memories, and try the car simulation.");
+    return;
+  }
+
+  if (/^(who made you|who created you)$/.test(t)) {
+    say("I'm the My AI Car Assistant project. I'm here to help with questions and the car simulation.");
     return;
   }
 
@@ -794,14 +826,16 @@ async function handle(raw) {
   /* Gemini AI: typed messages and recognized voice both reach this function. */
   const query = expandFollowup(raw) || raw;
   busy = true;
-  $("status").textContent = "Thinking with Gemini…";
+  $("status").textContent = "Thinking…";
+
+  let streamingBubble = null;
 
   try {
     if (typeof window.askGemini !== "function") {
       throw new Error("Gemini is still starting. Wait a moment and try again.");
     }
 
-    const recentHistory = data.messages.slice(-10)
+    const recentHistory = data.messages.slice(-6)
       .map(item => item.who + ": " + item.text).join("\n");
     const memoryContext = [
       data.name ? "User's name: " + data.name : "",
@@ -816,18 +850,74 @@ async function handle(raw) {
       (recentHistory ? "\nRecent conversation:\n" + recentHistory : "") +
       "\nUser's new message: " + query;
 
-    const reply = await window.askGemini(prompt);
-    if (!reply || !reply.trim()) throw new Error("Gemini returned an empty reply.");
+    streamingBubble = document.createElement("div");
+    streamingBubble.className = "message assistant";
+    const label = document.createElement("span");
+    label.className = "who";
+    label.textContent = "Assistant";
+    const messageText = document.createElement("span");
+    messageText.className = "assistant-text";
+    messageText.textContent = "Thinking...";
+    streamingBubble.append(label, messageText);
+    $("chat").append(streamingBubble);
+    $("chat").scrollTop = $("chat").scrollHeight;
+    $("status").textContent = "Thinking…";
+
+    const thisRequest = requestVersion;
+
+    // Gemini alone streams into the message bubble. Wikipedia is displayed when complete.
+    const reply = await window.askGemini(prompt, partialText => {
+      if (thisRequest !== requestVersion) return;
+      const target = streamingBubble.querySelector(".assistant-text");
+      if (target) target.textContent = partialText;
+      $("chat").scrollTop = $("chat").scrollHeight;
+      $("status").textContent = "Gemini is replying…";
+    }, activeRequestController ? activeRequestController.signal : undefined);
+
+    if (thisRequest !== requestVersion) return;
+    if (!reply || !reply.trim()) throw new Error("EMPTY_REPLY");
 
     data.topic = query;
     data.lastQuestion = raw;
-    say(reply.trim(), query, raw);
+    if (needsWikiFallback(reply) && isLikelyKnowledgeQuestion(query)) {
+      const result = await wiki(query);
+      if (thisRequest !== requestVersion) return;
+      if (result && result.text) {
+        say("I found a useful Wikipedia result: " + result.title + "\n\n" + result.text +
+          "\n\nSource: Wikipedia", query, raw, streamingBubble);
+        return;
+      }
+    }
+    say(reply.trim(), query, raw, streamingBubble);
   } catch (error) {
     console.error("Assistant request failed:", error);
-    say("I couldn't get a reply from Gemini just now. Check your internet connection " +
-        "and Firebase App Check setup, then try again. Error: " +
-        (error.message || "Unknown error"));
+
+    if (isLikelyKnowledgeQuestion(query)) {
+      try {
+        $("status").textContent = "Gemini unavailable. Checking Wikipedia…";
+        const result = await wiki(query);
+        if (result && result.text) {
+          say("Gemini couldn't answer just now, so I checked Wikipedia.\n\n" +
+            result.title + "\n" + result.text + "\n\nSource: Wikipedia",
+            query, raw, streamingBubble);
+          return;
+        }
+      } catch (wikiError) {
+        console.warn("Wikipedia fallback failed:", wikiError);
+      }
+    }
+
+    if (streamingBubble && streamingBubble.parentNode) streamingBubble.remove();
+    const message = String(error && error.message || "");
+    if (/high demand|temporarily unavailable|\\b500\\b/i.test(message)) {
+      say("The service is busy right now. Please wait a little and try again.");
+    } else if (/EMPTY_REPLY/.test(message)) {
+      say("I didn't receive an answer. Please try asking again.");
+    } else {
+      say("I couldn't get an answer just now. Please check your connection and try again.");
+    }
   } finally {
+    activeRequestController = null;
     busy = false;
     $("status").textContent = "Ready when you are.";
   }
@@ -894,13 +984,15 @@ $("listen").addEventListener("click", () => {
   }
 });
 
+function updateSpeechButton() {
+  $("stopVoice").textContent = speechOn ? "🔇 Stop Talking" : "🔊 Speak";
+  $("status").textContent = speechOn ? "Voice replies on." : "Voice replies off.";
+}
+
 $("stopVoice").addEventListener("click", () => {
-  speechOn = false;
-
-  if (window.speechSynthesis) speechSynthesis.cancel();
-
-  $("status").textContent = "Voice replies off.";
-  add("Assistant", "Speech is off. Type “start talking” to turn it on again.");
+  speechOn = !speechOn;
+  if (!speechOn && window.speechSynthesis) speechSynthesis.cancel();
+  updateSpeechButton();
 });
 
 $("stopCar").addEventListener("click", () => runCar("STOP"));
@@ -916,15 +1008,25 @@ $("showMemory").addEventListener("click", () => {
 $("forget").addEventListener("click", clearMemory);
 
 $("clearChat").addEventListener("click", () => {
+  requestVersion++;
+  if (activeRequestController) {
+    activeRequestController.abort();
+    activeRequestController = null;
+  }
+  busy = false;
   data.messages = [];
+  data.lastQuestion = "";
+  data.lastAnswer = "";
   save();
   $("chat").replaceChildren();
-  add("Assistant", "Chat display cleared. Saved memories remain.");
+  $("status").textContent = "Ready when you are.";
+  add("Assistant", "Chat cleared. Saved memories remain.");
 });
 
 /* ---------------- STARTUP ---------------- */
 
 load();
+updateSpeechButton();
 
 data.messages.forEach(message => {
   add(message.who, message.text, false);
@@ -1004,20 +1106,29 @@ $("voiceStatus").textContent =
   });
 
 
-  // 8. Make Gemini available to your existing assistant
-  window.askGemini = async function(prompt) {
+  // 8. Make Gemini available to your existing assistant.
+  // Gemini streams; Wikipedia answers are fetched and displayed normally.
+  window.askGemini = async function(prompt, onChunk, signal) {
     try {
-      const result = await model.generateContent(prompt);
-      return result.response.text();
-
+      const result = await model.generateContentStream(prompt);
+      let fullText = "";
+      for await (const chunk of result.stream) {
+        if (signal && signal.aborted) {
+          throw new DOMException("Request cancelled", "AbortError");
+        }
+        const piece = chunk.text();
+        if (piece) {
+          fullText += piece;
+          if (typeof onChunk === "function") onChunk(fullText);
+        }
+      }
+      return fullText;
     } catch (error) {
       console.error("Gemini error:", error);
       throw error;
     }
   };
 
-
-  // Gemini is called when the user sends a message.
 
   // 9. Confirmation
   console.log("Firebase initialized.");
