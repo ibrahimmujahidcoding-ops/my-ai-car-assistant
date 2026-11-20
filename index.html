@@ -778,6 +778,99 @@ function canUseWikiAfterError(errorType) {
   return ["daily", "rate", "temporary", "network"].includes(errorType);
 }
 
+/* ---------------- NATURAL CONVERSATION REPLIES ---------------- */
+
+/*
+  Short, complete social messages are handled locally for speed.
+  Exact matching prevents these replies from swallowing real questions.
+*/
+function smallTalkReply(text) {
+  const phrase = text.replace(/\s+bro$/, "");
+
+  const groups = [
+    {
+      phrases: [
+        "nice", "that's nice", "thats nice", "cool", "that's cool", "thats cool",
+        "great", "that's great", "thats great", "amazing", "awesome",
+        "well done", "good job", "brilliant", "excellent", "lovely", "perfect",
+        "interesting", "that's interesting", "thats interesting"
+      ],
+      reply: "Glad you think so, bro. What would you like to explore next?"
+    },
+    {
+      phrases: [
+        "okay", "ok", "alright", "all right", "got it", "understood",
+        "i see", "fair enough"
+      ],
+      reply: "Alright, bro. Let me know if you need anything else."
+    },
+    {
+      phrases: [
+        "thanks", "thank you", "thank you so much", "thanks a lot",
+        "many thanks", "much appreciated"
+      ],
+      reply: "You're welcome, bro."
+    },
+    {
+      phrases: [
+        "that's bad", "thats bad", "that's sad", "thats sad", "oh no",
+        "sorry to hear that", "not good", "that's unfortunate", "thats unfortunate"
+      ],
+      reply: "Sorry to hear that, bro. I hope things get better."
+    },
+    {
+      phrases: [
+        "i'm happy", "im happy", "i am happy", "feeling happy", "i feel happy",
+        "i'm excited", "im excited", "i am excited"
+      ],
+      reply: "That's lovely, bro! What's making you happy?"
+    },
+    {
+      phrases: [
+        "i'm sad", "im sad", "i am sad", "feeling sad", "i feel sad",
+        "i'm upset", "im upset", "i am upset"
+      ],
+      reply: "I'm sorry you're feeling that way, bro. Want to tell me what's going on?"
+    },
+    {
+      phrases: [
+        "i'm confused", "im confused", "i am confused",
+        "i don't understand", "i dont understand",
+        "i'm not sure", "im not sure", "i am not sure"
+      ],
+      reply: "No worries, bro. Tell me which part is confusing, and I'll explain it more simply."
+    },
+    {
+      phrases: [
+        "i'm frustrated", "im frustrated", "i am frustrated",
+        "this is frustrating", "i'm annoyed", "im annoyed", "i am annoyed"
+      ],
+      reply: "I hear you, bro. Let's take it one step at a time. What's causing the trouble?"
+    },
+    {
+      phrases: ["sorry", "i'm sorry", "im sorry", "my apologies"],
+      reply: "No worries, bro. It's okay."
+    },
+    {
+      phrases: [
+        "i agree", "exactly", "that's true", "thats true",
+        "you're right", "youre right"
+      ],
+      reply: "Glad we're on the same page, bro."
+    },
+    {
+      phrases: [
+        "bye", "goodbye", "see you", "see you later",
+        "talk to you later", "i have to go"
+      ],
+      reply: "Take care, bro. Talk to you later!"
+    }
+  ];
+
+  const match = groups.find(group => group.phrases.includes(phrase));
+  return match ? match.reply : null;
+}
+
 /* ---------------- MAIN ASSISTANT ---------------- */
 
 async function handle(raw) {
@@ -922,8 +1015,10 @@ async function handle(raw) {
     return;
   }
 
-  if (/\b(thanks|thank you)\b/.test(t)) {
-    say("You're welcome, bro.");
+  /* Short social replies: no AI request needed. */
+  const socialReply = smallTalkReply(t);
+  if (socialReply) {
+    say(socialReply);
     return;
   }
 
